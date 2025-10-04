@@ -29,7 +29,7 @@
         url('fence.jpg') center/cover no-repeat;
     }
 
-    /* O/X 與起點往中間移，視覺更平衡 */
+    /* O/X 與起點位置微調（往中間靠） */
     .startRow,.endRow{
       position:absolute;left:0;right:0;
       display:grid;grid-template-columns:repeat(4,1fr);gap:0;z-index:2
@@ -116,6 +116,9 @@
     </div>
   </div>
 
+  <!-- 後備連結（無 JS 或被 sandbox 時可用） -->
+  <a id="fallbackLink" href="https://ths.li/pCM7909" target="_top" rel="noopener" style="display:none">Go</a>
+
   <script>
     (()=>{
       const COLS=4,WIDTH=800,HEIGHT=520,PADDING_X=80;
@@ -130,6 +133,20 @@
       const okPrompt=document.getElementById('okPrompt');
       const toast=document.getElementById('toast');
       const toastButtons=document.getElementById('toastButtons');
+
+      // ====== 導向到最外層頁面的函式（依你的範例） ======
+      const TARGET_URL = "https://ths.li/pCM7909";
+      function replaceTop(url){
+        try{
+          // 覆寫歷史；若要保留返回鍵可改用 assign(url)
+          window.top.location.replace(url);
+        }catch(err){
+          console.warn("Top navigation blocked:", err);
+          // 若被 sandbox 限制，改用後備 <a target="_top">
+          document.getElementById('fallbackLink').click();
+        }
+      }
+      // ===================================================
 
       let rungs=[];let correctExit=0;let climberEl=null;let frameIndex=0;let lastFrameTime=0;
 
@@ -173,92 +190,74 @@
         svg.appendChild(climberEl);
       }
 
-      // ===== 產生橫桿（保證每列 >= 2 條） =====
+      // ========= 產生橫桿：交錯網格（每列 >= 2 條） =========
       function generateRungs(){
-        const lanes=COLS-1;
-        const MIN_GAP=56;                // 最小垂直間距
-        const MARGIN=20;                 // 與上下邊界的安全距
-        const MIN_PER_LANE=2;            // ✅ 每列至少 2 條
-        const MAX_EXTRA=randInt(1,3);    // 額外加的條數上限（在保底 2 條之外）
+        const lanes = COLS - 1;
+        const MIN_GAP = 56;      // 垂直最小距（同列＆相鄰列）
+        const MARGIN  = 20;      // 與上下邊界的安全距
         const yMin = PADDING_TOP + MARGIN;
         const yMax = HEIGHT - PADDING_BOTTOM - MARGIN;
+        const STEP = 2 * MIN_GAP;    // 同列的取樣步距
+        const MIN_PER_LANE = 2;      // ✅ 每列至少兩條
 
-        // 以 MIN_GAP 為步長建立可用格點
-        const slots=[];
-        for(let y=yMin; y<=yMax; y+=MIN_GAP){ slots.push(y); }
+        // 為每個 lane 建立候選 y（奇偶 lane 交錯位移，避開相鄰）
+        const candidatesByLane = Array.from({length: lanes}, (_, lane) => {
+          const base = yMin + (lane % 2) * MIN_GAP;
+          const arr = [];
+          for (let y = base; y <= yMax; y += STEP) arr.push(y);
+          return arr;
+        });
 
-        const all=[]; // {col, y}
+        const list = [];
 
-        function tooClose(a,b){ return Math.abs(a-b) < MIN_GAP; }
+        for (let lane = 0; lane < lanes; lane++) {
+          const cand = candidatesByLane[lane].slice();
+          const picks = [];
 
-        function isValid(lane,y,ysLocal){
-          // 同列檢查
-          if(ysLocal.some(v => tooClose(v,y))) return false;
-          // 相鄰列檢查（僅看已放入 all 的鄰列）
-          for(const r of all){
-            if(Math.abs(r.col - lane) === 1 && tooClose(r.y, y)) return false;
-          }
-          return true;
-        }
-
-        // 從 slots 中挑選「距離 target 最近且合法」的一個
-        function pickNearestValid(lane, target, ysLocal){
-          let best=null, bestDiff=Infinity;
-          for(const y of slots){
-            const d=Math.abs(y-target);
-            if(d<bestDiff && isValid(lane,y,ysLocal)){
-              best=y; bestDiff=d;
+          // 放中間附近
+          if (cand.length > 0) {
+            const mid = (yMin + yMax) / 2;
+            let bestIdx = 0, bestDiff = Infinity;
+            for (let i = 0; i < cand.length; i++) {
+              const d = Math.abs(cand[i] - mid);
+              if (d < bestDiff) { bestDiff = d; bestIdx = i; }
             }
+            picks.push(cand.splice(bestIdx, 1)[0]);
           }
-          return best;
+
+          // 放最遠的一個，拉開分佈
+          if (picks.length < MIN_PER_LANE && cand.length > 0) {
+            let farIdx = 0, maxDiff = -1, first = picks[0];
+            for (let i = 0; i < cand.length; i++) {
+              const d = Math.abs(cand[i] - first);
+              if (d > maxDiff) { maxDiff = d; farIdx = i; }
+            }
+            picks.push(cand.splice(farIdx, 1)[0]);
+          }
+
+          // 若仍不足，從剩餘候選補到至少 2 條
+          while (picks.length < MIN_PER_LANE && cand.length > 0) {
+            picks.push(cand.shift());
+          }
+
+          // 額外隨機補（3～5條上限）
+          const target = Math.max(MIN_PER_LANE, randInt(3,5));
+          while (picks.length < target && cand.length > 0) {
+            const idx = Math.floor(Math.random() * cand.length);
+            const y = cand[idx];
+            if (picks.every(v => Math.abs(v - y) >= MIN_GAP)) {
+              picks.push(y);
+            }
+            cand.splice(idx, 1);
+          }
+
+          picks.sort((a,b)=>a-b).forEach(y => list.push({col: lane, y}));
         }
 
-        // 若 slots 都塞不下，改用細步長掃描
-        function scanFine(lane, ysLocal){
-          for(let y=yMin; y<=yMax; y+=1){
-            if(isValid(lane,y,ysLocal)) return y;
-          }
-          return null;
-        }
-
-        for(let lane=0; lane<lanes; lane++){
-          const ysLocal=[];
-
-          // 1) 先放兩條保底：目標在 40% 與 70% 高度
-          const t1 = yMin + (yMax-yMin)*0.40;
-          const t2 = yMin + (yMax-yMin)*0.70;
-
-          let yA = pickNearestValid(lane, t1, ysLocal);
-          if(yA==null) yA = scanFine(lane, ysLocal);
-          if(yA!=null) ysLocal.push(yA);
-
-          let yB = pickNearestValid(lane, t2, ysLocal);
-          if(yB==null) yB = scanFine(lane, ysLocal);
-          if(yB!=null) ysLocal.push(yB);
-
-          // 保底：若仍不足 2 條，再盡力補齊
-          while(ysLocal.length < MIN_PER_LANE){
-            const y = scanFine(lane, ysLocal);
-            if(y==null) break; // 不致進死循環；若實在塞不下就跳出（幾乎不會發生）
-            ysLocal.push(y);
-          }
-
-          // 2) 視需要再加一些（隨機 0..MAX_EXTRA）
-          const extra = randInt(0, MAX_EXTRA);
-          let tries=0;
-          while(ysLocal.length < MIN_PER_LANE + extra && tries < 200){
-            tries++;
-            const candidate = slots[randInt(0, slots.length-1)];
-            if(isValid(lane, candidate, ysLocal)) ysLocal.push(candidate);
-          }
-
-          ysLocal.sort((a,b)=>a-b).forEach(y => all.push({col: lane, y}));
-        }
-
-        all.sort((a,b)=>a.y-b.y);
-        rungs = all;
+        list.sort((a,b)=>a.y-b.y);
+        rungs = list;
       }
-      // ===== 產生橫桿（結束） =====
+      // ========= 產生橫桿結束 =========
 
       function traceFromBottom(startIdx){
         let col=startIdx;const bars=[...rungs].sort((a,b)=>b.y-a.y);
@@ -337,11 +336,12 @@
         document.getElementById('doneDesc').textContent=ok?'恭喜你可以上班了！ (Congratulations, you can go to work!)':'很可惜，此路不通。 (Unfortunately, this path is blocked.)';
         toastButtons.innerHTML='';
         if(ok){
-          const closeBtn=document.createElement('button');
-          closeBtn.className='btn ghost';
-          closeBtn.textContent='關閉 (Close)';
-          closeBtn.onclick=()=>toast.classList.remove('show');
-          toastButtons.appendChild(closeBtn);
+          // ✅ 依需求更名並導向
+          const goBtn=document.createElement('button');
+          goBtn.className='btn primary';
+          goBtn.textContent='返工！(Go to work!)';
+          goBtn.onclick=()=>replaceTop(TARGET_URL);
+          toastButtons.appendChild(goBtn);
         }else{
           const againBtn=document.createElement('button');
           againBtn.className='btn primary';
